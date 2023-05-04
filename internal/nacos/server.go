@@ -9,8 +9,10 @@ import (
 	"github.com/nacos-group/nacos-sdk-go/v2/vo"
 )
 
+// NamingClient will keep this server alive in nacos until the server is terminated.
 var NamingClient naming_client.INamingClient
 
+// RegisterServer2Nacos registers this server to nacos.
 func RegisterServer2Naocs() error {
 	option, err := InitConfig(nil)
 	if err != nil {
