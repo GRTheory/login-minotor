@@ -66,6 +66,16 @@ func NewUtmpFileReader(log *logp.Logger, bucket datastore.Bucket, config config)
 }
 
 func (r *UtmpFileReader) restoreStateFromDisk() error {
+	err := r.restoreFileRecordsFromDisk()
+	if err != nil {
+		return err
+	}
+
+	err = r.restoreLoginSessionsFromDisk()
+	if err != nil {
+		return err
+	}
+
 	return nil
 }
 
@@ -88,16 +98,16 @@ func (r *UtmpFileReader) restoreFileRecordsFromDisk() error {
 			err = decoder.Decode(&utmpFile)
 			if err == nil {
 				r.savedUtmpFiles[utmpFile.Inode] = utmpFile
-			}else if err == io.EOF {
+			} else if err == io.EOF {
 				// Read all
 				break
-			}else {
+			} else {
 				return fmt.Errorf("error decoding file record: %w", err)
 			}
 		}
 	}
 	r.log.Debugf("Restored %d UTMP file records from disk", len(r.savedUtmpFiles))
-	
+
 	return nil
 }
 
