@@ -65,6 +65,19 @@ func NewUtmpFileReader(log *logp.Logger, bucket datastore.Bucket, config config)
 	return nil, nil
 }
 
+func (r *UtmpFileReader) saveStateToDisk() error {
+	err := r.saveFileRecordsToDisk()
+	if err != nil {
+		return err
+	}
+	err = r.saveLoginSessionsToDisk()
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
 func (r *UtmpFileReader) saveFileRecordsToDisk() error {
 	var buf bytes.Buffer
 	encoder := gob.NewEncoder(&buf)
