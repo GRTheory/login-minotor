@@ -69,6 +69,38 @@ func (r *UtmpFileReader) restoreStateFromDisk() error {
 	return nil
 }
 
+func (r *UtmpFileReader) restoreFileRecordsFromDisk() error {
+	var decoder *gob.Decoder
+	err := r.bucket.Load(bucketKeyFileRecords, func(blob []byte) error {
+		if len(blob) > 0 {
+			buf := bytes.NewBuffer(blob)
+			decoder = gob.NewDecoder(buf)
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+
+	if decoder != nil {
+		for {
+			var utmpFile UtmpFile
+			err = decoder.Decode(&utmpFile)
+			if err == nil {
+				r.savedUtmpFiles[utmpFile.Inode] = utmpFile
+			}else if err == io.EOF {
+				// Read all
+				break
+			}else {
+				return fmt.Errorf("error decoding file record: %w", err)
+			}
+		}
+	}
+	r.log.Debugf("Restored %d UTMP file records from disk", len(r.savedUtmpFiles))
+	
+	return nil
+}
+
 func (r *UtmpFileReader) restoreLoginSessionsFromDisk() error {
 	var decoder *gob.Decoder
 	err := r.bucket.Load(bucketKeyLoginSessions, func(blob []byte) error {
@@ -88,10 +120,10 @@ func (r *UtmpFileReader) restoreLoginSessionsFromDisk() error {
 			err = decoder.Decode(loginRecord)
 			if err == nil {
 				r.loginSession[loginRecord.TTY] = *loginRecord
-			}else if err == io.EOF {
+			} else if err == io.EOF {
 				// Read all
 				break
-			}else {
+			} else {
 				return fmt.Errorf("error decodng login record: %w", err)
 			}
 		}
