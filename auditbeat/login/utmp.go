@@ -46,7 +46,7 @@ type UtmpFileReader struct {
 	bucket         datastore.Bucket
 	config         config
 	savedUtmpFiles map[Inode]UtmpFile
-	loginSessions   map[string]LoginRecord
+	loginSessions  map[string]LoginRecord
 }
 
 // NewUtmpFileReader creates and initializes a new UTMP file reader.
@@ -63,6 +63,25 @@ func NewUtmpFileReader(log *logp.Logger, bucket datastore.Bucket, config config)
 	// err := r.r
 
 	return nil, nil
+}
+
+func (r *UtmpFileReader) saveFileRecordsToDisk() error {
+	var buf bytes.Buffer
+	encoder := gob.NewEncoder(&buf)
+
+	for _, utmpFile := range r.savedUtmpFiles {
+		err := encoder.Encode(utmpFile)
+		if err != nil {
+			return fmt.Errorf("error encoding UTMP file record: %w", err)
+		}
+	}
+	err := r.bucket.Store(bucketKeyFileRecords, buf.Bytes())
+	if err != nil {
+		return fmt.Errorf("error writing UTMP fiel records to disk: %w", err)
+	}
+
+	r.log.Debugf("Wrote %d UTMP file records to disk", len(r.savedUtmpFiles))
+	return nil
 }
 
 func (r *UtmpFileReader) saveLoginSessionsToDisk() error {
