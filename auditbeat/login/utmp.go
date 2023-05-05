@@ -51,18 +51,21 @@ type UtmpFileReader struct {
 
 // NewUtmpFileReader creates and initializes a new UTMP file reader.
 func NewUtmpFileReader(log *logp.Logger, bucket datastore.Bucket, config config) (*UtmpFileReader, error) {
-	// r := &UtmpFileReader{
-	// 	log:            log,
-	// 	bucket:         bucket,
-	// 	config:         config,
-	// 	savedUtmpFiles: make(map[Inode]UtmpFile),
-	// 	loginSession:   make(map[string]LoginRecord),
-	// }
+	r := &UtmpFileReader{
+		log:            log,
+		bucket:         bucket,
+		config:         config,
+		savedUtmpFiles: make(map[Inode]UtmpFile),
+		loginSessions:   make(map[string]LoginRecord),
+	}
 
 	// Load state (fiel records, tty mapping) from disk.
-	// err := r.r
+	err := r.restoreStateFromDisk()
+	if err != nil {
+		return nil, fmt.Errorf("failed to restore state from disk: %w", err)
+	}
 
-	return nil, nil
+	return r, nil
 }
 
 func (r *UtmpFileReader) saveStateToDisk() error {
