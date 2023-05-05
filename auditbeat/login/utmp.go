@@ -46,7 +46,7 @@ type UtmpFileReader struct {
 	bucket         datastore.Bucket
 	config         config
 	savedUtmpFiles map[Inode]UtmpFile
-	loginSession   map[string]LoginRecord
+	loginSessions   map[string]LoginRecord
 }
 
 // NewUtmpFileReader creates and initializes a new UTMP file reader.
@@ -63,6 +63,26 @@ func NewUtmpFileReader(log *logp.Logger, bucket datastore.Bucket, config config)
 	// err := r.r
 
 	return nil, nil
+}
+
+func (r *UtmpFileReader) saveLoginSessionsToDisk() error {
+	var buf bytes.Buffer
+	encoder := gob.NewEncoder(&buf)
+
+	for _, loginRecord := range r.loginSessions {
+		err := encoder.Encode(loginRecord)
+		if err != nil {
+			return fmt.Errorf("error encoding login record: %w", err)
+		}
+	}
+
+	err := r.bucket.Store(bucketKeyLoginSessions, buf.Bytes())
+	if err != nil {
+		return fmt.Errorf("error writing login records to disk: %w", err)
+	}
+
+	r.log.Debugf("Wrote %d open login sessions to disk", len(r.loginSessions))
+	return nil
 }
 
 func (r *UtmpFileReader) restoreStateFromDisk() error {
@@ -129,7 +149,7 @@ func (r *UtmpFileReader) restoreLoginSessionsFromDisk() error {
 			loginRecord := new(LoginRecord)
 			err = decoder.Decode(loginRecord)
 			if err == nil {
-				r.loginSession[loginRecord.TTY] = *loginRecord
+				r.loginSessions[loginRecord.TTY] = *loginRecord
 			} else if err == io.EOF {
 				// Read all
 				break
@@ -138,7 +158,7 @@ func (r *UtmpFileReader) restoreLoginSessionsFromDisk() error {
 			}
 		}
 	}
-	r.log.Debugf("Restored %d open login sessions from disk", len(r.loginSession))
+	r.log.Debugf("Restored %d open login sessions from disk", len(r.loginSessions))
 
 	return nil
 }
