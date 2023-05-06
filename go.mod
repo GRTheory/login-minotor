@@ -4,6 +4,7 @@ go 1.20
 
 require (
 	github.com/elastic/beats/v7 v7.17.10
+	github.com/joho/godotenv v1.5.1
 	github.com/spf13/cobra v1.7.0
 )
 

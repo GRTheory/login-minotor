@@ -5,9 +5,12 @@ import (
 	"encoding/gob"
 	"fmt"
 	"io"
+	"net"
 	"os"
+	"os/user"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"syscall"
 
 	"github.com/elastic/beats/v7/auditbeat/datastore"
@@ -136,7 +139,183 @@ func (r *UtmpFileReader) deleteOldUtmpFiles(existingFiles *[]UtmpFile) {
 		existingInodes[utmpFile.Inode] = struct{}{}
 	}
 
-	
+	for savedInode := range r.savedUtmpFiles {
+		if _, exists := existingInodes[savedInode]; !exists {
+			r.log.Debugf("Deleting file record for old inode %d.", savedInode)
+			delete(r.savedUtmpFiles, savedInode)
+		}
+	}
+}
+
+// readNewInFile reads a UTMP formatted file and emits the records after the last know record.
+func (r *UtmpFileReader) readNewInFile(loginRecordC chan<- LoginRecord, errorC chan<- error, utmpFile UtmpFile) {
+	savedUtmpFile, isKnownFile := r.savedUtmpFiles[utmpFile.Inode]
+	if !isKnownFile {
+		r.log.Debugf("Found new file: %v (utmpFile=%+v)", utmpFile.Path, utmpFile)
+	}
+	utmpFile.Offset = savedUtmpFile.Offset
+
+	size := utmpFile.Size
+	oldSize := savedUtmpFile.Size
+	if size < oldSize || utmpFile.Offset > size {
+		// UTMP files are append-only and so this is weired. It might be a sign of
+		// a highly unlikely inode reuse - or of something more nefarious.
+		// Setting isKnownFile to false so we read teh whole file from the beginning.
+		isKnownFile = false
+
+		r.log.Warnf("saved size of offset illogical (new=%+v, saved=%+v) - reading whole file.",
+			utmpFile, savedUtmpFile)
+	}
+
+	if !isKnownFile && size == 0 {
+		// Empty new file - save but don't read.
+		// err := r.updat
+	}
+}
+
+func (r *UtmpFileReader) updateSavedUtmpFile(utmpFile UtmpFile, f *os.File) error {
+	if f != nil {
+		offset, err := f.Seek(0, 1)
+		if err != nil {
+			return fmt.Errorf("error calling Seek: %w", err)
+		}
+		utmpFile.Offset = offset
+	}
+
+	r.log.Debugf("Saving UTMP file record (%+v)", utmpFile)
+
+	r.savedUtmpFiles[utmpFile.Inode] = utmpFile
+
+	return nil
+}
+
+// processGoodLoginRecord receives UTMP login records in order and returns
+// a corresponding LoginRecord. Some UTMP records do not translate
+// into a LoginRecord, in this case the return values is nil.
+func (r *UtmpFileReader) processGoodLoginRecord(utmp *Utmp) *LoginRecord {
+	record := LoginRecord{
+		Utmp:      utmp,
+		Timestamp: utmp.UtTv,
+		UID:       -1,
+		PID:       -1,
+	}
+
+	if utmp.UtLine != "~" {
+		record.TTY = utmp.UtLine
+	}
+
+	switch utmp.UtType {
+	// See utmp(5) for C constants.
+	case RUN_LVL:
+		// The runlevel - though a number -is stored as
+		// the ASCII character of that number.
+		runlevel := string(rune(utmp.UtPid))
+
+		// 0 - halt; 6 - reboot
+		if utmp.UtUser == "shutdown" || runlevel == "0" || runlevel == "6" {
+			record.Type = shutdownRecord
+
+			// Clear any old logins
+			// TODO: Issue logout events for login events that are still around
+			// at this point.
+			r.loginSessions = make(map[string]LoginRecord)
+		} else {
+			// Ignore runlevel changes that are not halt or reboot.
+			return nil
+		}
+	case BOOT_TIME:
+		if utmp.UtLine == "~" && utmp.UtUser == "reboot" {
+			record.Type = bootRecord
+
+			// Clear any old logins
+			// TODO: Issue logout events for login events that are still around
+			// at this point.
+			r.loginSessions = make(map[string]LoginRecord)
+		} else {
+			// Ignore unknown record
+			return nil
+		}
+	case USER_PROCESS:
+		record.Type = userLoginRecord
+
+		record.Username = utmp.UtUser
+		record.UID = lookupUsername(record.Username)
+		record.PID = utmp.UtPid
+		record.IP = newIP(utmp.UtAddrV6)
+		record.Hostname = utmp.UtHost
+
+		// Store TTY from user login record for enrichment when user logout
+		// record comes along (which, alas, does not contain the username)
+		r.loginSessions[record.TTY] = record
+	case DEAD_PROCESS:
+		savedRecord, found := r.loginSessions[record.TTY]
+		if found {
+			record.Type = userLogoutRecord
+			record.Username = savedRecord.Username
+			record.UID = savedRecord.UID
+			record.PID = savedRecord.PID
+			record.IP = savedRecord.IP
+			record.Hostname = savedRecord.Hostname
+		} else {
+			// Skip - this is usually the DEAD_PROCESS event for
+			// a previous INIT_PROCESS or LOGIN_PROCESS event -
+			// those are ignored - (see default case below).
+			return nil
+		}
+	default:
+		/*
+			Every other record type is ignored:
+			- EMPTY - empty record
+			- NEW_TIME and OLD_TIME - could be useful, but not written when time changes.
+			  at least using `date`
+			- INIT_PROCESS and LOGIN_PROCESS - written on boot but do not contain any
+			  interesting infomation
+			- ACCOUNTING - not implemented according to manpage
+		*/
+		r.log.Debugf("Ignoring UTMP record of type %v.", utmp.UtType)
+		return nil
+	}
+
+	return &record
+}
+
+// lookupUsername looks up a username and returns its UID.
+// It does not pass through errors (e.g. when the user is not found)
+// but will return -1 instead.
+func lookupUsername(username string) int {
+	if username != "" {
+		user, err := user.Lookup(username)
+		if err == nil {
+			uid, err := strconv.Atoi(user.Uid)
+			if err != nil {
+				return uid
+			}
+		}
+	}
+
+	return -1
+}
+
+func newIP(utAddrV6 [4]uint32) *net.IP {
+	var ip net.IP
+
+	// See utmp(5) for the utmp struct fields.
+	if utAddrV6[1] != 0 || utAddrV6[2] != 0 || utAddrV6[3] != 0 {
+		// IPv6
+		b := make([]byte, 16)
+		byteOrder.PutUint32(b[:4], utAddrV6[0])
+		byteOrder.PutUint32(b[4:8], utAddrV6[1])
+		byteOrder.PutUint32(b[8:12], utAddrV6[2])
+		byteOrder.PutUint32(b[12:], utAddrV6[3])
+		ip = net.IP(b)
+	} else {
+		// IPv4
+		b := make([]byte, 4)
+		byteOrder.PutUint32(b, utAddrV6[0])
+		ip = net.IP(b)
+	}
+
+	return &ip
 }
 
 func (r *UtmpFileReader) saveStateToDisk() error {
