@@ -93,7 +93,24 @@ func (r *UtmpFileReader) ReadNew() (<-chan LoginRecord, <-chan error) {
 		defer close(loginRecordC)
 		defer close(errorC)
 
-		// wtmpFiles, err := r.find
+		wtmpFiles, err := r.findFiles(r.config.WtmpFilePattern, Wtmp)
+		if err != nil {
+			errorC <- fmt.Errorf("failed to expand fiel pattern: %w", err)
+			return
+		}
+
+		btmpFiles, err := r.findFiles(r.config.BtmpFilePattern, Btmp)
+		if err != nil {
+			errorC <- fmt.Errorf("failed to expand fiel pattern: %w", err)
+			return
+		}
+
+		utmpFiles := append(wtmpFiles, btmpFiles...)
+		defer r.deleteOldUtmpFiles(&utmpFiles)
+
+		for _, utmpFile := range utmpFiles {
+			r.readNewInFile(loginRecordC, errorC, utmpFile)
+		}
 	}()
 
 	return loginRecordC, errorC
