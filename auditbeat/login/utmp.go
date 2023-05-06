@@ -95,13 +95,13 @@ func (r *UtmpFileReader) ReadNew() (<-chan LoginRecord, <-chan error) {
 
 		wtmpFiles, err := r.findFiles(r.config.WtmpFilePattern, Wtmp)
 		if err != nil {
-			errorC <- fmt.Errorf("failed to expand fiel pattern: %w", err)
+			errorC <- fmt.Errorf("failed to expand file pattern: %w", err)
 			return
 		}
 
 		btmpFiles, err := r.findFiles(r.config.BtmpFilePattern, Btmp)
 		if err != nil {
-			errorC <- fmt.Errorf("failed to expand fiel pattern: %w", err)
+			errorC <- fmt.Errorf("failed to expand file pattern: %w", err)
 			return
 		}
 
