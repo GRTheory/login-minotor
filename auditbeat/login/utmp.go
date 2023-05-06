@@ -169,7 +169,84 @@ func (r *UtmpFileReader) readNewInFile(loginRecordC chan<- LoginRecord, errorC c
 
 	if !isKnownFile && size == 0 {
 		// Empty new file - save but don't read.
-		// err := r.updat
+		err := r.updateSavedUtmpFile(utmpFile, nil)
+		if err != nil {
+			errorC <- fmt.Errorf("error updating file record for file %v: %w", utmpFile.Path, err)
+		}
+		return
+	}
+
+	if !isKnownFile || size != oldSize {
+		r.log.Debugf("Reading file %v (utmpFile=%+v)", utmpFile.Path, utmpFile)
+
+		f, err := os.Open(utmpFile.Path)
+		if err != nil {
+			errorC <- fmt.Errorf("error opening file %v: %w", utmpFile.Path, err)
+			return
+		}
+		defer func() {
+			// Once we start reading a file, we update the file record even if something fails -
+			// otherwise we will just keep trying to re-read very frequently forever.
+			err := r.updateSavedUtmpFile(utmpFile, f)
+			if err != nil {
+				errorC <- fmt.Errorf("error updating file record for file %v: %w", utmpFile.Path, err)
+			}
+
+			f.Close()
+		}()
+
+		// This will be the usual case, but we do not want to seek with the stored offset
+		// if the saved is smaler than the current one.
+		if size >= oldSize && utmpFile.Offset <= size {
+			_, err = f.Seek(utmpFile.Offset, 0)
+			if err != nil {
+				errorC <- fmt.Errorf("error setting offset %d for file %v: %w", utmpFile.Offset, utmpFile.Path, err)
+			}
+		}
+
+		// If the saved size is smaller than the current one, or the previous Seek failed,
+		// we retry one more time, this time resetting to the beginning of the file.
+		if size < oldSize || utmpFile.Offset > size || err != nil {
+			_, err = f.Seek(0, 0)
+			if err != nil {
+				errorC <- fmt.Errorf("error setting offset 0 for file %v: %w", utmpFile.Path, err)
+
+				// Even that did not work, so return.
+				return
+			}
+		}
+
+		for {
+			utmp, err := ReadNextUtmp(f)
+			if err != nil && err != io.EOF {
+				errorC <- fmt.Errorf("error reading entry in UTMP file %v: %w", utmpFile.Path, err)
+				return
+			}
+
+			if utmp != nil {
+				r.log.Debugf("utmp: (ut_type=%d, ut_pid=%d, ut_line=%v, ut_user=%v, ut_host=%v, ut_tv.tv_set=%v, ut_addr_v6=%v)",
+					utmp.UtType, utmp.UtPid, utmp.UtLine, utmp.UtUser, utmp.UtHost, utmp.UtTv, utmp.UtAddrV6)
+
+				var loginRecord *LoginRecord
+				switch utmpFile.Type {
+				case Wtmp:
+					loginRecord = r.processGoodLoginRecord(utmp)
+				case Btmp:
+					loginRecord, err = r.processBadLoginRecord(utmp)
+					if err != nil {
+						errorC <- err
+					}
+				}
+
+				if loginRecord != nil {
+					loginRecord.Origin = utmpFile.Path
+					loginRecordC <- *loginRecord
+				}
+			} else {
+				// Eventually, we have read all UTMP records in the file.
+				break
+			}
+		}
 	}
 }
 
@@ -187,6 +264,35 @@ func (r *UtmpFileReader) updateSavedUtmpFile(utmpFile UtmpFile, f *os.File) erro
 	r.savedUtmpFiles[utmpFile.Inode] = utmpFile
 
 	return nil
+}
+
+// processBadLoginRecord takes a UTMP login record from the "bad" login file (/var/log/btmp)
+// and returns a LoginRecord for it.
+func (r *UtmpFileReader) processBadLoginRecord(utmp *Utmp) (*LoginRecord, error) {
+	record := LoginRecord{
+		Utmp:      utmp,
+		Timestamp: utmp.UtTv,
+		TTY:       utmp.UtLine,
+		UID:       -1,
+		PID:       -1,
+	}
+
+	switch utmp.UtType {
+	// See utmp(5) for C constans.
+	case LOGIN_PROCESS, USER_PROCESS:
+		record.Type = userLoginFailedRecord
+
+		record.Username = utmp.UtUser
+		record.UID = lookupUsername(record.Username)
+		record.PID = utmp.UtPid
+		record.IP = newIP(utmp.UtAddrV6)
+		record.Hostname = utmp.UtHost
+	default:
+		// This shoud not happen.
+		return nil, fmt.Errorf("UTMP record with unexpected type %v in bad login file", utmp.UtType)
+	}
+
+	return &record, nil
 }
 
 // processGoodLoginRecord receives UTMP login records in order and returns
