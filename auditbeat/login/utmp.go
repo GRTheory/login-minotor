@@ -5,6 +5,10 @@ import (
 	"encoding/gob"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
+	"sort"
+	"syscall"
 
 	"github.com/elastic/beats/v7/auditbeat/datastore"
 	"github.com/elastic/elastic-agent-libs/logp"
@@ -56,7 +60,7 @@ func NewUtmpFileReader(log *logp.Logger, bucket datastore.Bucket, config config)
 		bucket:         bucket,
 		config:         config,
 		savedUtmpFiles: make(map[Inode]UtmpFile),
-		loginSessions:   make(map[string]LoginRecord),
+		loginSessions:  make(map[string]LoginRecord),
 	}
 
 	// Load state (fiel records, tty mapping) from disk.
@@ -66,6 +70,73 @@ func NewUtmpFileReader(log *logp.Logger, bucket datastore.Bucket, config config)
 	}
 
 	return r, nil
+}
+
+// Close performs any cleanup tasks when the UTMP reader is done.
+func (r *UtmpFileReader) Close() error {
+	if r.bucket != nil {
+		return r.bucket.Close()
+	}
+	return nil
+}
+
+// ReadNew returns any new UTMP entries in any files matching the configured pattern.
+func (r *UtmpFileReader) ReadNew() (<-chan LoginRecord, <-chan error) {
+	loginRecordC := make(chan LoginRecord)
+	errorC := make(chan error)
+
+	go func() {
+		defer logp.Recover("A panic occured while collecting login information")
+		defer close(loginRecordC)
+		defer close(errorC)
+
+		// wtmpFiles, err := r.find
+	}()
+
+	return loginRecordC, errorC
+}
+
+func (r *UtmpFileReader) findFiles(filePattern string, utmpType UtmpType) ([]UtmpFile, error) {
+	paths, err := filepath.Glob(filePattern)
+	if err != nil {
+		return nil, fmt.Errorf("failed to expand file pattern %v: %w", filePattern, err)
+	}
+
+	// Sort paths in reverse order (oldest/most-rorated file first)
+	sort.Sort(sort.Reverse(sort.StringSlice(paths)))
+
+	var utmpFiles []UtmpFile
+	for _, path := range paths {
+		fileInfo, err := os.Stat(path)
+		if err != nil {
+			if os.IsNotExist(err) {
+				// Skip - file might have been rotated out
+				r.log.Debugf("File %v does not exist anymore.", path)
+				continue
+			} else {
+				return nil, fmt.Errorf("unexpected error when looking up file %v: %w", path, err)
+			}
+		}
+
+		utmpFiles = append(utmpFiles, UtmpFile{
+			Inode: Inode(fileInfo.Sys().(*syscall.Stat_t).Ino),
+			Path:  path,
+			Size:  fileInfo.Size(),
+			Type:  utmpType,
+		})
+	}
+
+	return utmpFiles, nil
+}
+
+// deleteOldUtmpFiles cleans up old UTMP file records where the inode no longer exists.
+func (r *UtmpFileReader) deleteOldUtmpFiles(existingFiles *[]UtmpFile) {
+	existingInodes := make(map[Inode]struct{})
+	for _, utmpFile := range *existingFiles {
+		existingInodes[utmpFile.Inode] = struct{}{}
+	}
+
+	
 }
 
 func (r *UtmpFileReader) saveStateToDisk() error {
