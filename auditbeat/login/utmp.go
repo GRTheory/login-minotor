@@ -66,7 +66,7 @@ func NewUtmpFileReader(log *logp.Logger, bucket datastore.Bucket, config config)
 		loginSessions:  make(map[string]LoginRecord),
 	}
 
-	// Load state (fiel records, tty mapping) from disk.
+	// Load state (file records, tty mapping) from disk.
 	err := r.restoreStateFromDisk()
 	if err != nil {
 		return nil, fmt.Errorf("failed to restore state from disk: %w", err)
@@ -177,7 +177,7 @@ func (r *UtmpFileReader) readNewInFile(loginRecordC chan<- LoginRecord, errorC c
 	if size < oldSize || utmpFile.Offset > size {
 		// UTMP files are append-only and so this is weired. It might be a sign of
 		// a highly unlikely inode reuse - or of something more nefarious.
-		// Setting isKnownFile to false so we read teh whole file from the beginning.
+		// Setting isKnownFile to false so we read the whole file from the beginning.
 		isKnownFile = false
 
 		r.log.Warnf("saved size of offset illogical (new=%+v, saved=%+v) - reading whole file.",
